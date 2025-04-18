@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Calcul Emprise au Sol</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    #map { height: 90vh; }
+    #search {
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: #f5f5f5;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 8px;
+      font-size: 1em;
+    }
+    button {
+      padding: 8px 12px;
+      font-size: 1em;
+      cursor: pointer;
+    }
+    #result { padding: 10px; background: #eef; }
+  </style>
+</head>
+<body>
+  <div id="search">
+    <input type="text" id="address" placeholder="Entrez une adresse..." />
+    <button onclick="searchAddress()">Rechercher</button>
+  </div>
+  <div id="map"></div>
+  <div id="result"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([46.6, 2.2], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    async function searchAddress() {
+      const address = document.getElementById('address').value;
+      const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(address)}&limit=1`);
+      const data = await res.json();
+
+      if (data.features.length === 0) {
+        alert('Adresse introuvable.');
+        return;
+      }
+
+      const [lon, lat] = data.features[0].geometry.coordinates;
+      const marker = L.marker([lat, lon]).addTo(map);
+      map.setView([lat, lon], 18);
+
+      loadGeoData(lat, lon);
+    }
+
+    async function loadGeoData(lat, lon) {
+      const codeInseeRes = await fetch(`https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lon}`);
+      const commune = await codeInseeRes.json();
+      const codeInsee = commune[0].code;
+
+      const baseUrl = `https://cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/communes/${codeInsee}`;
+      const batimentsUrl = `${baseUrl}/batiments/batiments.json`;
+      const parcellesUrl = `${baseUrl}/parcelles/parcelles.json`;
+
+      const [batiments, parcelles] = await Promise.all([
+        fetch(batimentsUrl).then(r => r.json()),
+        fetch(parcellesUrl).then(r => r.json())
+      ]);
+
+      const pt = turf.point([lon, lat]);
+
+      const parcelle = parcelles.features.find(f => turf.booleanPointInPolygon(pt, f));
+      const batimentsSurParcelle = batiments.features.filter(f => turf.booleanIntersects(f, parcelle));
+
+      const surfaceParcelle = turf.area(parcelle);
+      let surfaceBatiment = 0;
+      batimentsSurParcelle.forEach(f => {
+        surfaceBatiment += turf.area(f);
+      });
+
+      const emprise = (surfaceBatiment / surfaceParcelle * 100).toFixed(2);
+
+      L.geoJSON(parcelle, { color: 'blue' }).addTo(map);
+      L.geoJSON(batimentsSurParcelle, { color: 'red' }).addTo(map);
+
+      document.getElementById('result').innerHTML = `
+        <strong>Surface de la parcelle :</strong> ${surfaceParcelle.toFixed(2)} m²<br>
+        <strong>Surface bâtie :</strong> ${surfaceBatiment.toFixed(2)} m²<br>
+        <strong>Emprise au sol :</strong> ${emprise}%
+      `;
+    }
+  </script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+</body>
+</html>
